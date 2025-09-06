@@ -1,0 +1,103 @@
+version: '3.8'
+
+services:
+  minestore:
+    build: .
+    container_name: minestore-app
+    restart: unless-stopped
+    depends_on:
+      - database
+      - redis
+    volumes:
+      - minestore_storage:/var/www/minestore/storage
+      - minestore_public:/var/www/minestore/public/img
+    environment:
+      # Required variables
+      - APP_URL=${APP_URL}
+      - LICENSE_KEY=${LICENSE_KEY}
+      - DB_PASSWORD=${DB_PASSWORD}
+      
+      # Database variables
+      - DB_CONNECTION=mysql
+      - DB_HOST=database
+      - DB_PORT=3306
+      - DB_DATABASE=${DB_DATABASE:-minestore}
+      - DB_USERNAME=${DB_USERNAME:-minestore_user}
+      
+      # Redis variables
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      
+      # Optional variables with default values
+      - APP_NAME=${APP_NAME:-MineStoreCMS}
+      - APP_ENV=${APP_ENV:-production}
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_KEY=${APP_KEY:-}
+      - TIMEZONE=${TIMEZONE:-UTC}
+      - LOCALE=${LOCALE:-en}
+      
+      # MineStoreCMS configuration
+      - PAYNOW_ENABLED=${PAYNOW_ENABLED:-}
+      - PAYNOW_TAX_MODE=${PAYNOW_TAX_MODE:-}
+      - PAYNOW_STORE_ID=${PAYNOW_STORE_ID:-}
+      - PAYNOW_API_KEY=${PAYNOW_API_KEY:-}
+      - STEAM_API_KEY=${STEAM_API_KEY:-}
+      
+    networks:
+      - minestore_network
+    labels:
+      # Traefik labels for Coolify
+      - "traefik.enable=true"
+      - "traefik.http.routers.minestore.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.minestore.entrypoints=websecure"
+      - "traefik.http.routers.minestore.tls.certresolver=letsencrypt"
+      - "traefik.http.services.minestore.loadbalancer.server.port=80"
+      - "coolify.managed=true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/api"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  database:
+    image: mariadb:10.11
+    container_name: minestore-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${DB_DATABASE:-minestore}
+      - MYSQL_USER=${DB_USERNAME:-minestore_user}
+      - MYSQL_PASSWORD=${DB_PASSWORD}
+      - TZ=${TIMEZONE:-UTC}
+    volumes:
+      - database_data:/var/lib/mysql
+    networks:
+      - minestore_network
+    command: [
+      '--default-authentication-plugin=mysql_native_password',
+      '--character-set-server=utf8mb4',
+      '--collation-server=utf8mb4_unicode_ci',
+      '--default-time-zone=+00:00'
+    ]
+
+  redis:
+    image: redis:7-alpine
+    container_name: minestore-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}
+    volumes:
+      - redis_data:/data
+    networks:
+      - minestore_network
+
+volumes:
+  minestore_storage:
+  minestore_public:
+  database_data:
+  redis_data:
+
+networks:
+  minestore_network:
+    driver: bridge
