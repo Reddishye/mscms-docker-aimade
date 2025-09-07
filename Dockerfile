@@ -310,7 +310,7 @@ EXPOSE 9000
 CMD ["php-fpm"]
 
 # ===============================================
-# FRONTEND STAGE - Next.js Frontend (PRODUCTION)
+# FRONTEND STAGE - Next.js Frontend (PRODUCTION) - FIXED
 # ===============================================
 FROM node:20-alpine AS minestore-frontend
 
@@ -333,10 +333,13 @@ RUN echo "🔧 Setting up frontend container..." \
  && echo '{"name":"minestore-frontend","version":"1.0.0","scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"next":"latest","react":"latest","react-dom":"latest"}}' > package.json \
  && echo "✅ Minimal frontend structure created"
 
-# Install dependencies and BUILD for production
-RUN echo "📦 Installing dependencies and building for production..." \
- && npm ci --only=production \
+# Install ALL dependencies first (including dev deps needed for build), then build, then clean up
+RUN echo "📦 Installing all dependencies for build..." \
+ && npm ci \
+ && echo "🔨 Building for production..." \
  && npm run build \
+ && echo "🧹 Cleaning up dev dependencies..." \
+ && npm prune --production \
  && echo "✅ Production build completed"
 
 # Create production startup script
@@ -350,10 +353,12 @@ RUN echo '#!/bin/bash' > /app/start.sh \
  && echo '  echo "📦 Found shared frontend, copying and building..."' >> /app/start.sh \
  && echo '  cp -r /shared/frontend/* /app/ 2>/dev/null || true' >> /app/start.sh \
  && echo '  if [ -f "package.json" ]; then' >> /app/start.sh \
- && echo '    echo "🔧 Installing production dependencies..."' >> /app/start.sh \
- && echo '    npm ci --only=production' >> /app/start.sh \
+ && echo '    echo "🔧 Installing all dependencies for build..."' >> /app/start.sh \
+ && echo '    npm ci' >> /app/start.sh \
  && echo '    echo "🔨 Building for production..."' >> /app/start.sh \
  && echo '    npm run build' >> /app/start.sh \
+ && echo '    echo "🧹 Cleaning up dev dependencies..."' >> /app/start.sh \
+ && echo '    npm prune --production' >> /app/start.sh \
  && echo '  fi' >> /app/start.sh \
  && echo 'fi' >> /app/start.sh \
  && echo '' >> /app/start.sh \
@@ -364,7 +369,7 @@ RUN echo '#!/bin/bash' > /app/start.sh \
  && echo 'else' >> /app/start.sh \
  && echo '  echo "❌ No production build found! This should not happen in production."' >> /app/start.sh \
  && echo '  echo "🔧 Attempting emergency build..."' >> /app/start.sh \
- && echo '  npm run build && exec npm start' >> /app/start.sh \
+ && echo '  npm ci && npm run build && npm prune --production && exec npm start' >> /app/start.sh \
  && echo 'fi' >> /app/start.sh \
  && chmod +x /app/start.sh
 
