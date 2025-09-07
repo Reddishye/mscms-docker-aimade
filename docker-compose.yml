@@ -1,6 +1,76 @@
 services:
+  # Database - needs to be available first
+  database:
+    image: mariadb:10.11
+    container_name: minestore-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${DB_DATABASE:-minestore}
+      - MYSQL_USER=${DB_USERNAME:-minestore_user}
+      - MYSQL_PASSWORD=${DB_PASSWORD}
+      - TZ=${TIMEZONE:-UTC}
+    volumes:
+      - database_data:/var/lib/mysql
+    networks:
+      - minestore_network
+    command: [
+      '--default-authentication-plugin=mysql_native_password',
+      '--character-set-server=utf8mb4',
+      '--collation-server=utf8mb4_unicode_ci',
+      '--default-time-zone=+00:00',
+      '--innodb-buffer-pool-size=256M',
+      '--max-connections=100'
+    ]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: minestore-redis
+    restart: unless-stopped
+    command: >
+      redis-server 
+      --appendonly yes 
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}
+    volumes:
+      - redis_data:/data
+    networks:
+      - minestore_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Application Installer - runs once to set up the app
   app-installer:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      target: minestore-installer
     container_name: minestore-installer
     restart: "no"
     depends_on:
@@ -49,12 +119,13 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    labels:
-      - "service=minestore-installer"
 
   # PHP-FPM service
   php-fpm:
-    image: php:8.3-fpm-bookworm
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: minestore-runtime
     container_name: minestore-php-fpm
     restart: unless-stopped
     depends_on:
@@ -66,8 +137,6 @@ services:
         condition: service_healthy
     volumes:
       - minestore_app:/var/www/minestore
-      - ./config/php/php.ini:/usr/local/etc/php/conf.d/custom.ini:ro
-      - ./config/php/php-fpm.conf:/usr/local/etc/php-fpm.d/www.conf:ro
     environment:
       - APP_URL=${APP_URL}
       - LICENSE_KEY=${LICENSE_KEY}
@@ -94,50 +163,48 @@ services:
     working_dir: /var/www/minestore
     networks:
       - minestore_network
+    healthcheck:
+      test: ["CMD-SHELL", "php-fpm-healthcheck || nc -z 127.0.0.1 9000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     logging:
       driver: "json-file"
       options:
         max-size: "20m"
         max-file: "5"
-    labels:
-      - "service=php-fpm"
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: minestore-frontend
+    container_name: minestore-frontend
+    restart: unless-stopped
+    depends_on:
+      app-installer:
+        condition: service_completed_successfully
+    volumes:
+      - minestore_app:/var/www/minestore:ro
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - NEXT_PUBLIC_API_URL=${APP_URL}
+    networks:
+      - minestore_network
     healthcheck:
-      test: ["CMD-SHELL", "php-fpm-healthcheck || exit 1"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health || nc -z 127.0.0.1 3000"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
-    command: >
-      bash -c "
-        # Install required PHP extensions
-        apt-get update && apt-get install -y libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libxml2-dev libcurl4-openssl-dev libonig-dev libssl-dev netcat-openbsd &&
-        docker-php-ext-configure gd --with-freetype --with-jpeg &&
-        docker-php-ext-install -j$$(nproc) pdo_mysql mysqli mbstring zip gd xml curl soap bcmath opcache &&
-        
-        # Wait for app installation to complete
-        while [ ! -f /var/www/minestore/.installed ]; do
-          echo 'Waiting for MineStore installation to complete...'
-          sleep 10
-        done
-        
-        # Run migrations and optimizations
-        cd /var/www/minestore &&
-        php artisan migrate --force &&
-        php artisan config:clear &&
-        php artisan cache:clear &&
-        php artisan route:clear &&
-        php artisan view:clear &&
-        php artisan config:cache &&
-        php artisan route:cache &&
-        php artisan view:cache &&
-        
-        # Configure permissions and start PHP-FPM
-        chown -R www-data:www-data /var/www/minestore &&
-        chmod -R 755 /var/www/minestore &&
-        chmod -R 775 storage bootstrap/cache &&
-        
-        exec php-fpm
-      "
+      start_period: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   # Nginx reverse proxy
   nginx:
@@ -145,8 +212,10 @@ services:
     container_name: minestore-nginx
     restart: unless-stopped
     depends_on:
-      - php-fpm
-      - frontend
+      php-fpm:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
     ports:
       - "${NGINX_PORT:-80}:80"
     volumes:
@@ -155,95 +224,33 @@ services:
       - ./config/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - minestore_network
+    labels:
+      # Manual Traefik configuration for Coolify
+      - "traefik.enable=true"
+      - "traefik.http.routers.minestore-${COMPOSE_PROJECT_NAME:-minestore}.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.minestore-${COMPOSE_PROJECT_NAME:-minestore}.entrypoints=websecure"
+      - "traefik.http.routers.minestore-${COMPOSE_PROJECT_NAME:-minestore}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.minestore-${COMPOSE_PROJECT_NAME:-minestore}.loadbalancer.server.port=80"
+      - "traefik.docker.network=coolify"
+      - "coolify.managed=true"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health || nc -z 127.0.0.1 80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     logging:
       driver: "json-file"
       options:
         max-size: "50m"
         max-file: "5"
-    labels:
-      - "service=nginx"
-      # Traefik labels for Coolify
-      - "traefik.enable=true"
-      - "traefik.http.routers.minestore.rule=Host(`${DOMAIN}`)"
-      - "traefik.http.routers.minestore.entrypoints=websecure"
-      - "traefik.http.routers.minestore.tls.certresolver=letsencrypt"
-      - "traefik.http.services.minestore.loadbalancer.server.port=80"
-      - "coolify.managed=true"
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-
-  # Next.js Frontend
-  frontend:
-    image: node:20-alpine
-    container_name: minestore-frontend
-    restart: unless-stopped
-    depends_on:
-      app-installer:
-        condition: service_completed_successfully
-    volumes:
-      - minestore_app:/var/www/minestore
-    working_dir: /var/www/minestore/frontend
-    environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - NEXT_PUBLIC_API_URL=${APP_URL}
-    networks:
-      - minestore_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "20m"
-        max-file: "3"
-    labels:
-      - "service=frontend"
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
-    command: >
-      sh -c "
-        # Install pnpm and wait for installation to complete
-        npm install -g pnpm &&
-        
-        while [ ! -f /var/www/minestore/.installed ]; do
-          echo 'Waiting for MineStore installation to complete...'
-          sleep 10
-        done
-        
-        # Check if frontend directory exists and has been built
-        if [ -d /var/www/minestore/frontend ] && [ -f /var/www/minestore/frontend/package.json ]; then
-          cd /var/www/minestore/frontend &&
-          
-          # Only install and build if .next doesn't exist
-          if [ ! -d .next ]; then
-            echo 'Installing frontend dependencies...' &&
-            pnpm install --production &&
-            pnpm exec next telemetry disable &&
-            echo 'Building frontend...' &&
-            pnpm run build
-          fi &&
-          
-          echo 'Starting frontend server...' &&
-          pnpm start
-        else
-          echo 'Frontend directory not found, creating minimal server...' &&
-          mkdir -p /tmp/frontend &&
-          cd /tmp/frontend &&
-          echo '{\"name\":\"minestore-frontend\",\"scripts\":{\"start\":\"node server.js\"}}' > package.json &&
-          echo 'const http = require(\"http\"); http.createServer((req,res) => { res.writeHead(200, {\"Content-Type\": \"text/html\"}); res.end(\"<h1>MineStore Frontend Loading...</h1>\"); }).listen(3000, () => console.log(\"Frontend placeholder running on port 3000\"));' > server.js &&
-          node server.js
-        fi
-      "
 
   # Laravel Queue Workers
   queue-worker:
-    image: php:8.3-fpm-bookworm
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: minestore-runtime
     container_name: minestore-queue-worker
     restart: unless-stopped
     depends_on:
@@ -266,33 +273,28 @@ services:
     working_dir: /var/www/minestore
     networks:
       - minestore_network
+    command: >
+      bash -c "
+        echo 'Waiting for app installation to complete...'
+        while [ ! -f /var/www/minestore/.installed ]; do
+          sleep 5
+        done
+        
+        cd /var/www/minestore
+        exec php artisan queue:work --queue=high,standard,low,default,paynow --sleep=3 --tries=3 --max-time=3600 --memory=256
+      "
     logging:
       driver: "json-file"
       options:
         max-size: "30m"
         max-file: "3"
-    labels:
-      - "service=queue-worker"
-    command: >
-      bash -c "
-        # Install required PHP extensions
-        apt-get update && apt-get install -y libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libxml2-dev libcurl4-openssl-dev libonig-dev libssl-dev &&
-        docker-php-ext-configure gd --with-freetype --with-jpeg &&
-        docker-php-ext-install -j$$(nproc) pdo_mysql mysqli mbstring zip gd xml curl soap bcmath opcache &&
-        
-        # Wait for app installation to complete
-        while [ ! -f /var/www/minestore/.installed ]; do
-          echo 'Waiting for MineStore installation to complete...'
-          sleep 10
-        done
-        
-        cd /var/www/minestore &&
-        exec php artisan queue:work --queue=high,standard,low,default,paynow --daemon --sleep=3 --tries=3
-      "
 
   # Laravel Scheduler
   scheduler:
-    image: php:8.3-fpm-bookworm
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: minestore-runtime
     container_name: minestore-scheduler
     restart: unless-stopped
     depends_on:
@@ -315,106 +317,24 @@ services:
     working_dir: /var/www/minestore
     networks:
       - minestore_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    labels:
-      - "service=scheduler"
     command: >
       bash -c "
-        # Install required PHP extensions
-        apt-get update && apt-get install -y libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libxml2-dev libcurl4-openssl-dev libonig-dev libssl-dev &&
-        docker-php-ext-configure gd --with-freetype --with-jpeg &&
-        docker-php-ext-install -j$$(nproc) pdo_mysql mysqli mbstring zip gd xml curl soap bcmath opcache &&
-        
-        # Wait for app installation to complete
+        echo 'Waiting for app installation to complete...'
         while [ ! -f /var/www/minestore/.installed ]; do
-          echo 'Waiting for MineStore installation to complete...'
-          sleep 10
+          sleep 5
         done
         
-        cd /var/www/minestore &&
+        cd /var/www/minestore
         while true; do
-          php artisan schedule:run
+          php artisan schedule:run --verbose --no-interaction
           sleep 60
         done
       "
-
-  # MariaDB Database
-  database:
-    image: mariadb:10.11
-    container_name: minestore-db
-    restart: unless-stopped
-    environment:
-      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
-      - MYSQL_DATABASE=${DB_DATABASE:-minestore}
-      - MYSQL_USER=${DB_USERNAME:-minestore_user}
-      - MYSQL_PASSWORD=${DB_PASSWORD}
-      - TZ=${TIMEZONE:-UTC}
-    volumes:
-      - database_data:/var/lib/mysql
-      - ./config/mysql/my.cnf:/etc/mysql/conf.d/custom.cnf:ro
-    networks:
-      - minestore_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "20m"
-        max-file: "3"
-    labels:
-      - "service=database"
-    command: [
-      '--default-authentication-plugin=mysql_native_password',
-      '--character-set-server=utf8mb4',
-      '--collation-server=utf8mb4_unicode_ci',
-      '--default-time-zone=+00:00',
-      '--log-error=/var/log/mysql/error.log',
-      '--general-log=1',
-      '--general-log-file=/var/log/mysql/general.log',
-      '--slow-query-log=1',
-      '--slow-query-log-file=/var/log/mysql/slow.log',
-      '--long-query-time=2'
-    ]
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-
-  # Redis Cache
-  redis:
-    image: redis:7-alpine
-    container_name: minestore-redis
-    restart: unless-stopped
-    command: >
-      redis-server 
-      --appendonly yes 
-      --appendfsync everysec
-      --save 900 1
-      --save 300 10
-      --save 60 10000
-      --loglevel notice
-      ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}
-    volumes:
-      - redis_data:/data
-    networks:
-      - minestore_network
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-    labels:
-      - "service=redis"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
 
 volumes:
   minestore_app:
@@ -430,3 +350,6 @@ networks:
     ipam:
       config:
         - subnet: 172.20.0.0/16
+  # Connect to Coolify's Traefik network
+  coolify:
+    external: true
