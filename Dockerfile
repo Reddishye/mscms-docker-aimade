@@ -1,5 +1,5 @@
-# Multi-stage build for MineStoreCMS
-FROM php:8.3-fpm-bookworm
+# Dockerfile for MineStore Application Installation
+FROM php:8.3-fpm-bookworm as minestore-installer
 
 # Environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -8,14 +8,11 @@ ENV COMPOSER_ALLOW_SUPERUSER=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    nginx \
-    supervisor \
     curl \
     wget \
     unzip \
     zip \
     git \
-    cron \
     netcat-openbsd \
     tzdata \
     libzip-dev \
@@ -59,206 +56,15 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # Configure working directory
 WORKDIR /var/www/minestore
 
-# Configure Nginx
-RUN rm -f /etc/nginx/sites-enabled/default
-COPY <<EOF /etc/nginx/sites-enabled/minestore.conf
-server {
-    listen 80;
-    server_name _;
-    client_max_body_size 64M;
-    
-    # Rate limiting
-    limit_req_zone \$binary_remote_addr zone=one:40m rate=180r/m;
-    limit_req zone=one burst=86 nodelay;
-    
-    # Frontend Next.js routes
-    location /_next/static {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    
-    location /static {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_cache_bypass \$http_upgrade;
-    }
-    
-    # Backend Laravel routes
-    location ~ ^/(admin|api|install|initiateInstallation) {
-        proxy_pass http://127.0.0.1:8090;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    
-    # Backend static assets
-    location ~ ^/(assets|css|flags|fonts|img|js|libs|res|scss|style)/ {
-        proxy_pass http://127.0.0.1:8090;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-
-# Backend Laravel server
-server {
-    listen 8090;
-    server_name _;
-    root /var/www/minestore/public;
-    index index.php;
-    client_max_body_size 64M;
-    
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-    
-    location ~ \.php\$ {
-        try_files \$uri =404;
-        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
-        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
-        fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
-    }
-    
-    location ~ /\. {
-        deny all;
-    }
-}
-EOF
-
-# Configure supervisord
-COPY <<EOF /etc/supervisor/conf.d/supervisord.conf
-[supervisord]
-nodaemon=true
-user=root
-logfile=/var/log/supervisor/supervisord.log
-pidfile=/var/run/supervisord.pid
-
-[program:nginx]
-command=nginx -g 'daemon off;'
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
-autorestart=true
-startretries=3
-
-[program:php-fpm]
-command=php-fpm -F
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
-autorestart=true
-startretries=3
-
-[program:laravel-queue]
-command=php /var/www/minestore/artisan queue:work --queue=high,standard,low,default --daemon --sleep=3 --tries=3
-directory=/var/www/minestore
-user=www-data
-stdout_logfile=/var/log/supervisor/laravel-queue.log
-stderr_logfile=/var/log/supervisor/laravel-queue.log
-autorestart=true
-startretries=3
-
-[program:laravel-paynow-queue]
-command=php /var/www/minestore/artisan queue:work --queue=paynow --daemon --sleep=3 --tries=3
-directory=/var/www/minestore
-user=www-data
-stdout_logfile=/var/log/supervisor/laravel-paynow-queue.log
-stderr_logfile=/var/log/supervisor/laravel-paynow-queue.log
-autorestart=true
-startretries=3
-
-[program:laravel-schedule]
-command=/bin/bash -c 'while true; do php /var/www/minestore/artisan schedule:run; sleep 60; done'
-directory=/var/www/minestore
-user=www-data
-stdout_logfile=/var/log/supervisor/laravel-schedule.log
-stderr_logfile=/var/log/supervisor/laravel-schedule.log
-autorestart=true
-startretries=3
-
-[program:laravel-cron-worker]
-command=php /var/www/minestore/artisan cron:worker
-directory=/var/www/minestore
-user=www-data
-stdout_logfile=/var/log/supervisor/laravel-cron-worker.log
-stderr_logfile=/var/log/supervisor/laravel-cron-worker.log
-autorestart=true
-startretries=3
-
-[program:discord-bot]
-command=php /var/www/minestore/artisan discord:run
-directory=/var/www/minestore
-user=www-data
-stdout_logfile=/var/log/supervisor/discord-bot.log
-stderr_logfile=/var/log/supervisor/discord-bot.log
-autorestart=true
-startretries=3
-
-[program:frontend]
-command=/bin/bash -c 'cd /var/www/minestore/frontend && pnpm start'
-directory=/var/www/minestore/frontend
-user=www-data
-environment=NODE_ENV=production,PORT=3000
-stdout_logfile=/var/log/supervisor/frontend.log
-stderr_logfile=/var/log/supervisor/frontend.log
-autorestart=true
-startretries=3
-
-[unix_http_server]
-file=/var/run/supervisor.sock
-chmod=0700
-
-[rpcinterface:supervisor]
-supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
-
-[supervisorctl]
-serverurl=unix:///var/run/supervisor.sock
-EOF
-
-# Configure PHP-FPM
-RUN echo "listen = /run/php/php8.3-fpm.sock" >> /usr/local/etc/php-fpm.d/www.conf \
-    && echo "listen.owner = www-data" >> /usr/local/etc/php-fpm.d/www.conf \
-    && echo "listen.group = www-data" >> /usr/local/etc/php-fpm.d/www.conf \
-    && echo "listen.mode = 0660" >> /usr/local/etc/php-fpm.d/www.conf
-
-# Entrypoint script
-COPY <<'EOF' /usr/local/bin/entrypoint.sh
+# Entrypoint script for MineStore installation
+COPY <<'EOF' /usr/local/bin/install-minestore.sh
 #!/bin/bash
 set -e
-
-echo "🚀 Starting MineStoreCMS..."
+echo "🚀 Starting MineStoreCMS Installation..."
 
 # Check required variables
 if [ -z "$LICENSE_KEY" ]; then
     echo "❌ ERROR: LICENSE_KEY is required"
-    exit 1
-fi
-
-if [ -z "$APP_URL" ]; then
-    echo "❌ ERROR: APP_URL is required"
     exit 1
 fi
 
@@ -296,43 +102,59 @@ if [ ! -f "/var/www/minestore/.installed" ]; then
         echo "✅ Timezone extension installed"
     fi
     
-    # Configure backend .env
-    if [ -f .env ]; then
-        sed -i "s|^APP_URL=.*|APP_URL=${APP_URL}|" .env
-        sed -i "s|^DB_HOST=.*|DB_HOST=${DB_HOST}|" .env
-        sed -i "s|^DB_PORT=.*|DB_PORT=${DB_PORT}|" .env
-        sed -i "s|^DB_DATABASE=.*|DB_DATABASE=${DB_DATABASE}|" .env
-        sed -i "s|^DB_USERNAME=.*|DB_USERNAME=${DB_USERNAME}|" .env
-        sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=${DB_PASSWORD}|" .env
-        sed -i "s|^TIMEZONE=.*|TIMEZONE=${TIMEZONE:-UTC}|" .env
-        sed -i "s|^LICENSE_KEY=.*|LICENSE_KEY=${LICENSE_KEY}|" .env
-        sed -i "s|^INSTALLED=.*|INSTALLED=0|" .env
-        
-        # Configure Redis if available
-        if [ ! -z "$REDIS_HOST" ]; then
-            sed -i "s|^REDIS_HOST=.*|REDIS_HOST=${REDIS_HOST}|" .env
-            sed -i "s|^CACHE_DRIVER=.*|CACHE_DRIVER=redis|" .env
-            sed -i "s|^SESSION_DRIVER=.*|SESSION_DRIVER=redis|" .env
-            sed -i "s|^QUEUE_CONNECTION=.*|QUEUE_CONNECTION=redis|" .env
-        fi
-        
-        echo "✅ Backend .env file configured"
-    fi
+    # Create .env file from environment variables (don't modify existing files)
+    cat > .env << ENVEOF
+APP_NAME="${APP_NAME:-MineStoreCMS}"
+APP_ENV="${APP_ENV:-production}"
+APP_KEY="${APP_KEY:-}"
+APP_DEBUG="${APP_DEBUG:-false}"
+APP_URL="${APP_URL}"
+
+DB_CONNECTION=mysql
+DB_HOST="${DB_HOST}"
+DB_PORT="${DB_PORT}"
+DB_DATABASE="${DB_DATABASE}"
+DB_USERNAME="${DB_USERNAME}"
+DB_PASSWORD="${DB_PASSWORD}"
+
+TIMEZONE="${TIMEZONE:-UTC}"
+LOCALE="${LOCALE:-en}"
+LICENSE_KEY="${LICENSE_KEY}"
+INSTALLED=0
+
+# Redis configuration
+REDIS_HOST="${REDIS_HOST:-redis}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+REDIS_PASSWORD="${REDIS_PASSWORD:-}"
+
+# Cache, Session, Queue configuration
+CACHE_DRIVER="${CACHE_DRIVER:-redis}"
+SESSION_DRIVER="${SESSION_DRIVER:-redis}"
+QUEUE_CONNECTION="${QUEUE_CONNECTION:-redis}"
+
+# MineStoreCMS specific configuration
+PAYNOW_ENABLED="${PAYNOW_ENABLED:-}"
+PAYNOW_TAX_MODE="${PAYNOW_TAX_MODE:-}"
+PAYNOW_STORE_ID="${PAYNOW_STORE_ID:-}"
+PAYNOW_API_KEY="${PAYNOW_API_KEY:-}"
+STEAM_API_KEY="${STEAM_API_KEY:-}"
+ENVEOF
+    
+    echo "✅ Backend .env file configured from environment variables"
     
     # Configure frontend .env
-    if [ -f frontend/.env ]; then
-        sed -i "s|^NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=${APP_URL}|" frontend/.env
+    if [ -d frontend ]; then
+        cat > frontend/.env << FRONTENDEOF
+NEXT_PUBLIC_API_URL="${APP_URL}"
+FRONTENDEOF
         echo "✅ Frontend .env configured"
-    elif [ -d frontend ]; then
-        echo "NEXT_PUBLIC_API_URL=${APP_URL}" > frontend/.env
-        echo "✅ Frontend .env created"
     fi
     
-    # Install PHP dependencies
+    # Install PHP dependencies (exclude dev dependencies that cause issues)
     echo "📦 Installing PHP dependencies..."
-    composer install --no-dev --optimize-autoloader --no-interaction
+    composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs
     
-    # Generate application key
+    # Generate application key if not provided
     if [ -z "$APP_KEY" ] || [ "$APP_KEY" = "" ]; then
         echo "🔑 Generating application key..."
         php artisan key:generate --force
@@ -356,49 +178,16 @@ if [ ! -f "/var/www/minestore/.installed" ]; then
     echo "✅ Installation completed"
 fi
 
-cd /var/www/minestore
-
-# Run migrations
-echo "🗄️ Running database migrations..."
-php artisan migrate --force
-
-# Optimize application
-echo "⚡ Optimizing application..."
-php artisan config:clear
-php artisan cache:clear
-php artisan route:clear
-php artisan view:clear
-php artisan config:cache
-php artisan route:cache
-php artisan view:cache
-
 # Configure permissions
 echo "🛡️ Setting up permissions..."
 chown -R www-data:www-data /var/www/minestore
 chmod -R 755 /var/www/minestore
 chmod -R 775 storage bootstrap/cache
-mkdir -p /run/php
-chown www-data:www-data /run/php
 
-# Configure timezone
-if [ ! -z "$TIMEZONE" ]; then
-    ln -snf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
-    echo $TIMEZONE > /etc/timezone
-fi
-
-echo "✅ Configuration completed. Starting services..."
-
-exec "$@"
+echo "✅ MineStore installation completed successfully!"
 EOF
 
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# Create required directories
-RUN mkdir -p /var/log/supervisor /run/php
-
-# Expose port
-EXPOSE 80
+RUN chmod +x /usr/local/bin/install-minestore.sh
 
 # Entry point
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+ENTRYPOINT ["/usr/local/bin/install-minestore.sh"]
