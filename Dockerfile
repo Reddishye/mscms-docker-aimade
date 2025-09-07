@@ -1,4 +1,4 @@
-# Dockerfile for MineStore Application - Fixed with Redis Support
+# Dockerfile for MineStore Application - Complete Production Build
 FROM php:8.3-fpm-bookworm AS minestore-installer
 
 # Environment variables
@@ -185,6 +185,13 @@ ENVEOF
 NEXT_PUBLIC_API_URL="${APP_URL}"
 FRONTENDEOF
     log "✅ Front-end .env configured"
+    
+    # Copy frontend to shared volume for the frontend container
+    if [ -d "/shared" ]; then
+      log "📦 Copying frontend to shared volume..."
+      cp -r frontend /shared/
+      log "✅ Frontend copied to shared volume"
+    fi
   fi
   
   # CRITICAL: Fix Laravel IDE Helper issue
@@ -303,12 +310,12 @@ EXPOSE 9000
 CMD ["php-fpm"]
 
 # ===============================================
-# FRONTEND STAGE - Next.js Frontend (FIXED)
+# FRONTEND STAGE - Next.js Frontend (PRODUCTION)
 # ===============================================
 FROM node:20-alpine AS minestore-frontend
 
-# Set environment variables
-ENV NODE_ENV=development \
+# Set environment variables for PRODUCTION
+ENV NODE_ENV=production \
     PORT=3000 \
     NEXT_TELEMETRY_DISABLED=1
 
@@ -321,22 +328,44 @@ WORKDIR /app
 # Create a minimal working frontend structure
 RUN echo "🔧 Setting up frontend container..." \
  && mkdir -p pages/api \
- && echo 'export default function Home() { return <div><h1>MineStoreCMS Frontend</h1><p>Frontend service is running. Waiting for application installation...</p></div> }' > pages/index.js \
- && echo 'export default function Health() { return <div>OK</div> }' > pages/api/health.js \
+ && echo 'export default function Home() { return <div><h1>MineStoreCMS Frontend</h1><p>Frontend service is running.</p></div> }' > pages/index.js \
+ && echo 'export default function handler(req, res) { res.status(200).json({ status: "OK", service: "frontend", timestamp: new Date().toISOString() }) }' > pages/api/health.js \
  && echo '{"name":"minestore-frontend","version":"1.0.0","scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"next":"latest","react":"latest","react-dom":"latest"}}' > package.json \
  && echo "✅ Minimal frontend structure created"
 
-# Install dependencies
-RUN echo "📦 Installing base dependencies..." \
- && npm install --silent \
- && echo "✅ Base dependencies installed"
+# Install dependencies and BUILD for production
+RUN echo "📦 Installing dependencies and building for production..." \
+ && npm ci --only=production \
+ && npm run build \
+ && echo "✅ Production build completed"
 
-# Create startup script
+# Create production startup script
 RUN echo '#!/bin/bash' > /app/start.sh \
- && echo 'echo "🚀 Starting Next.js frontend on port $PORT..."' >> /app/start.sh \
+ && echo 'echo "🚀 Starting Next.js frontend in PRODUCTION mode on port $PORT..."' >> /app/start.sh \
  && echo 'echo "📊 Node version: $(node --version)"' >> /app/start.sh \
- && echo 'echo "⚠️ Running in development mode..."' >> /app/start.sh \
- && echo 'exec npm run dev' >> /app/start.sh \
+ && echo 'echo "🏭 Environment: $NODE_ENV"' >> /app/start.sh \
+ && echo '' >> /app/start.sh \
+ && echo '# Check if we have a shared frontend from the installer' >> /app/start.sh \
+ && echo 'if [ -f "/shared/frontend/package.json" ] && [ -d "/shared/frontend" ]; then' >> /app/start.sh \
+ && echo '  echo "📦 Found shared frontend, copying and building..."' >> /app/start.sh \
+ && echo '  cp -r /shared/frontend/* /app/ 2>/dev/null || true' >> /app/start.sh \
+ && echo '  if [ -f "package.json" ]; then' >> /app/start.sh \
+ && echo '    echo "🔧 Installing production dependencies..."' >> /app/start.sh \
+ && echo '    npm ci --only=production' >> /app/start.sh \
+ && echo '    echo "🔨 Building for production..."' >> /app/start.sh \
+ && echo '    npm run build' >> /app/start.sh \
+ && echo '  fi' >> /app/start.sh \
+ && echo 'fi' >> /app/start.sh \
+ && echo '' >> /app/start.sh \
+ && echo '# Always start in production mode' >> /app/start.sh \
+ && echo 'if [ -f ".next/BUILD_ID" ]; then' >> /app/start.sh \
+ && echo '  echo "✅ Production build found, starting optimized server..."' >> /app/start.sh \
+ && echo '  exec npm start' >> /app/start.sh \
+ && echo 'else' >> /app/start.sh \
+ && echo '  echo "❌ No production build found! This should not happen in production."' >> /app/start.sh \
+ && echo '  echo "🔧 Attempting emergency build..."' >> /app/start.sh \
+ && echo '  npm run build && exec npm start' >> /app/start.sh \
+ && echo 'fi' >> /app/start.sh \
  && chmod +x /app/start.sh
 
 # Create a non-root user
@@ -348,8 +377,8 @@ USER nextjs
 
 EXPOSE 3000
 
-# Fixed health check - more lenient
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD curl -f http://localhost:3000/api/health || nc -z 127.0.0.1 3000 || exit 1
+# Production-ready health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+  CMD curl -f http://localhost:3000/api/health || exit 1
 
 CMD ["/app/start.sh"]
