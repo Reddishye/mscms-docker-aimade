@@ -305,7 +305,7 @@ if [ ! -f "/var/www/minestore/.installed" ]; then
         sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=${DB_PASSWORD}|" .env
         sed -i "s|^TIMEZONE=.*|TIMEZONE=${TIMEZONE:-UTC}|" .env
         sed -i "s|^LICENSE_KEY=.*|LICENSE_KEY=${LICENSE_KEY}|" .env
-        sed -i "s|^INSTALLED=.*|INSTALLED=1|" .env
+        sed -i "s|^INSTALLED=.*|INSTALLED=0|" .env
         
         # Configure Redis if available
         if [ ! -z "$REDIS_HOST" ]; then
