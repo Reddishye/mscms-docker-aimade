@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-  # MineStore application installer (init container)
   app-installer:
     build: .
     container_name: minestore-installer
