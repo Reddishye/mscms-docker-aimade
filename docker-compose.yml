@@ -80,6 +80,7 @@ services:
         condition: service_healthy
     volumes:
       - minestore_app:/var/www/minestore
+      - minestore_shared:/shared
     environment:
       # Required variables
       - APP_URL=${APP_URL}
@@ -187,7 +188,7 @@ services:
       app-installer:
         condition: service_completed_successfully
     volumes:
-      - minestore_app:/var/www/minestore:ro
+      - minestore_shared:/shared:ro
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -195,7 +196,7 @@ services:
     networks:
       - minestore_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health", "||", "nc", "-z", "127.0.0.1", "3000"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -224,8 +225,8 @@ services:
       - ./config/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - minestore_network
+      - coolify
     labels:
-      # Manual Traefik configuration for Coolify
       - "traefik.enable=true"
       - "traefik.http.routers.minestore-${COMPOSE_PROJECT_NAME:-minestore}.rule=Host(`${DOMAIN}`)"
       - "traefik.http.routers.minestore-${COMPOSE_PROJECT_NAME:-minestore}.entrypoints=websecure"
@@ -255,6 +256,8 @@ services:
     restart: unless-stopped
     depends_on:
       php-fpm:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - minestore_app:/var/www/minestore
@@ -300,6 +303,8 @@ services:
     depends_on:
       php-fpm:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - minestore_app:/var/www/minestore
     environment:
@@ -339,6 +344,8 @@ services:
 volumes:
   minestore_app:
     driver: local
+  minestore_shared:
+    driver: local
   database_data:
     driver: local
   redis_data:
@@ -350,6 +357,5 @@ networks:
     ipam:
       config:
         - subnet: 172.20.0.0/16
-  # Connect to Coolify's Traefik network
   coolify:
     external: true
