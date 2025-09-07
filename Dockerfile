@@ -1,4 +1,4 @@
-# Dockerfile for MineStore Application - Complete Production Build
+# Dockerfile for MineStore Application - Complete Production Build (FIXED)
 FROM php:8.3-fpm-bookworm AS minestore-installer
 
 # Environment variables
@@ -310,7 +310,7 @@ EXPOSE 9000
 CMD ["php-fpm"]
 
 # ===============================================
-# FRONTEND STAGE - Next.js Frontend (PRODUCTION) - FIXED
+# FRONTEND STAGE - Next.js Frontend (PRODUCTION) - COMPLETELY FIXED
 # ===============================================
 FROM node:20-alpine AS minestore-frontend
 
@@ -325,25 +325,27 @@ RUN apk add --no-cache curl bash
 # Set working directory
 WORKDIR /app
 
-# Create a minimal working frontend structure
-RUN echo "🔧 Setting up frontend container..." \
+# Create a simple working frontend that doesn't require build
+RUN echo "🔧 Setting up lightweight frontend container..." \
  && mkdir -p pages/api \
- && echo 'export default function Home() { return <div><h1>MineStoreCMS Frontend</h1><p>Frontend service is running.</p></div> }' > pages/index.js \
- && echo 'export default function handler(req, res) { res.status(200).json({ status: "OK", service: "frontend", timestamp: new Date().toISOString() }) }' > pages/api/health.js \
- && echo '{"name":"minestore-frontend","version":"1.0.0","scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"next":"latest","react":"latest","react-dom":"latest"}}' > package.json \
- && echo "✅ Minimal frontend structure created"
+ && echo 'import React from "react"; export default function Home() { return React.createElement("div", {}, React.createElement("h1", {}, "MineStoreCMS Frontend"), React.createElement("p", {}, "Frontend service is running in production mode.")); }' > pages/index.js \
+ && echo 'export default function handler(req, res) { res.status(200).json({ status: "OK", service: "frontend", timestamp: new Date().toISOString(), mode: process.env.NODE_ENV }); }' > pages/api/health.js \
+ && echo '{"name":"minestore-frontend","version":"1.0.0","scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"next":"15.0.0","react":"18.2.0","react-dom":"18.2.0"}}' > package.json \
+ && echo "✅ Simple frontend structure created"
 
-# Install ALL dependencies first (including dev deps needed for build), then build, then clean up
-RUN echo "📦 Installing all dependencies for build..." \
- && npm ci \
+# Install dependencies using npm install (not ci) and build
+RUN echo "📦 Installing dependencies..." \
+ && npm install \
  && echo "🔨 Building for production..." \
  && npm run build \
- && echo "🧹 Cleaning up dev dependencies..." \
+ && echo "🧹 Removing unnecessary files..." \
+ && rm -rf node_modules/.cache \
  && npm prune --production \
- && echo "✅ Production build completed"
+ && echo "✅ Production build completed successfully"
 
-# Create production startup script
+# Create production startup script with better error handling
 RUN echo '#!/bin/bash' > /app/start.sh \
+ && echo 'set -e' >> /app/start.sh \
  && echo 'echo "🚀 Starting Next.js frontend in PRODUCTION mode on port $PORT..."' >> /app/start.sh \
  && echo 'echo "📊 Node version: $(node --version)"' >> /app/start.sh \
  && echo 'echo "🏭 Environment: $NODE_ENV"' >> /app/start.sh \
@@ -351,25 +353,33 @@ RUN echo '#!/bin/bash' > /app/start.sh \
  && echo '# Check if we have a shared frontend from the installer' >> /app/start.sh \
  && echo 'if [ -f "/shared/frontend/package.json" ] && [ -d "/shared/frontend" ]; then' >> /app/start.sh \
  && echo '  echo "📦 Found shared frontend, copying and building..."' >> /app/start.sh \
+ && echo '  rm -rf /app/*' >> /app/start.sh \
  && echo '  cp -r /shared/frontend/* /app/ 2>/dev/null || true' >> /app/start.sh \
  && echo '  if [ -f "package.json" ]; then' >> /app/start.sh \
- && echo '    echo "🔧 Installing all dependencies for build..."' >> /app/start.sh \
- && echo '    npm ci' >> /app/start.sh \
- && echo '    echo "🔨 Building for production..."' >> /app/start.sh \
+ && echo '    echo "🔧 Installing shared frontend dependencies..."' >> /app/start.sh \
+ && echo '    npm install' >> /app/start.sh \
+ && echo '    echo "🔨 Building shared frontend for production..."' >> /app/start.sh \
  && echo '    npm run build' >> /app/start.sh \
  && echo '    echo "🧹 Cleaning up dev dependencies..."' >> /app/start.sh \
  && echo '    npm prune --production' >> /app/start.sh \
  && echo '  fi' >> /app/start.sh \
  && echo 'fi' >> /app/start.sh \
  && echo '' >> /app/start.sh \
- && echo '# Always start in production mode' >> /app/start.sh \
+ && echo '# Start the application' >> /app/start.sh \
  && echo 'if [ -f ".next/BUILD_ID" ]; then' >> /app/start.sh \
  && echo '  echo "✅ Production build found, starting optimized server..."' >> /app/start.sh \
  && echo '  exec npm start' >> /app/start.sh \
  && echo 'else' >> /app/start.sh \
- && echo '  echo "❌ No production build found! This should not happen in production."' >> /app/start.sh \
+ && echo '  echo "❌ No production build found!"' >> /app/start.sh \
  && echo '  echo "🔧 Attempting emergency build..."' >> /app/start.sh \
- && echo '  npm ci && npm run build && npm prune --production && exec npm start' >> /app/start.sh \
+ && echo '  npm install && npm run build && npm prune --production' >> /app/start.sh \
+ && echo '  if [ -f ".next/BUILD_ID" ]; then' >> /app/start.sh \
+ && echo '    echo "✅ Emergency build successful, starting server..."' >> /app/start.sh \
+ && echo '    exec npm start' >> /app/start.sh \
+ && echo '  else' >> /app/start.sh \
+ && echo '    echo "❌ Emergency build failed, exiting..."' >> /app/start.sh \
+ && echo '    exit 1' >> /app/start.sh \
+ && echo '  fi' >> /app/start.sh \
  && echo 'fi' >> /app/start.sh \
  && chmod +x /app/start.sh
 
