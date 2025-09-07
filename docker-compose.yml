@@ -207,7 +207,7 @@ services:
         max-size: "20m"
         max-file: "3"
 
-  # Nginx reverse proxy
+  # Nginx reverse proxy - SIMPLIFIED WITHOUT CUSTOM CONFIG MOUNTS
   nginx:
     image: nginx:alpine
     container_name: minestore-nginx
@@ -221,8 +221,7 @@ services:
       - "${NGINX_PORT:-80}:80"
     volumes:
       - minestore_app:/var/www/minestore:ro
-      - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./config/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      # REMOVED: Custom nginx config mounts that were causing the error
     networks:
       - minestore_network
       - coolify
@@ -234,8 +233,47 @@ services:
       - "traefik.http.services.minestore-${COMPOSE_PROJECT_NAME:-minestore}.loadbalancer.server.port=80"
       - "traefik.docker.network=coolify"
       - "coolify.managed=true"
+    # Simple nginx config via environment/command instead of file mounts
+    command: >
+      sh -c "
+      echo 'server {
+        listen 80;
+        server_name _;
+        root /var/www/minestore/public;
+        index index.php index.html;
+        client_max_body_size 64M;
+        
+        location /health {
+          access_log off;
+          return 200 \"healthy\n\";
+          add_header Content-Type text/plain;
+        }
+        
+        location / {
+          try_files \$$uri \$$uri/ /index.php?\$$query_string;
+        }
+        
+        location ~ \.php\$$ {
+          try_files \$$uri =404;
+          fastcgi_pass php-fpm:9000;
+          fastcgi_index index.php;
+          include fastcgi_params;
+          fastcgi_param SCRIPT_FILENAME \$$document_root\$$fastcgi_script_name;
+          fastcgi_read_timeout 300;
+        }
+        
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)\$$ {
+          expires 1y;
+          add_header Cache-Control \"public, immutable\";
+        }
+        
+        location ~ /\. {
+          deny all;
+        }
+      }' > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'
+      "
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health || nc -z 127.0.0.1 80"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
       interval: 30s
       timeout: 10s
       retries: 3
