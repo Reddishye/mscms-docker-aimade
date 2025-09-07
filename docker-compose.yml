@@ -50,7 +50,7 @@ services:
         max-size: "10m"
         max-file: "3"
     labels:
-      service: "minestore-installer"
+      - "service=minestore-installer"
 
   # PHP-FPM service
   php-fpm:
@@ -100,7 +100,7 @@ services:
         max-size: "20m"
         max-file: "5"
     labels:
-      service: "php-fpm"
+      - "service=php-fpm"
     healthcheck:
       test: ["CMD-SHELL", "php-fpm-healthcheck || exit 1"]
       interval: 30s
@@ -199,7 +199,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      service: "frontend"
+      - "service=frontend"
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
       interval: 30s
@@ -272,7 +272,7 @@ services:
         max-size: "30m"
         max-file: "3"
     labels:
-      service: "queue-worker"
+      - "service=queue-worker"
     command: >
       bash -c "
         # Install required PHP extensions
@@ -321,7 +321,7 @@ services:
         max-size: "10m"
         max-file: "3"
     labels:
-      service: "scheduler"
+      - "service=scheduler"
     command: >
       bash -c "
         # Install required PHP extensions
@@ -364,7 +364,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      service: "database"
+      - "service=database"
     command: [
       '--default-authentication-plugin=mysql_native_password',
       '--character-set-server=utf8mb4',
@@ -408,7 +408,7 @@ services:
         max-size: "10m"
         max-file: "3"
     labels:
-      service: "redis"
+      - "service=redis"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
