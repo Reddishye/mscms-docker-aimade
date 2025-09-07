@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   # MineStore application installer (init container)
   app-installer:
@@ -50,8 +52,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-        labels: "service"
-        env: "APP_ENV"
     labels:
       service: "minestore-installer"
 
@@ -102,12 +102,10 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
-        labels: "service"
-        env: "APP_ENV"
     labels:
       service: "php-fpm"
     healthcheck:
-      test: ["CMD-SHELL", "php-fpm-healthcheck"]
+      test: ["CMD-SHELL", "php-fpm-healthcheck || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -165,8 +163,6 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
-        labels: "service"
-        env: "APP_ENV"
     labels:
       service: "nginx"
       # Traefik labels for Coolify
@@ -177,7 +173,7 @@ services:
       - "traefik.http.services.minestore.loadbalancer.server.port=80"
       - "coolify.managed=true"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/api/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -205,8 +201,6 @@ services:
       options:
         max-size: "20m"
         max-file: "3"
-        labels: "service"
-        env: "NODE_ENV"
     labels:
       service: "frontend"
     healthcheck:
@@ -280,8 +274,6 @@ services:
       options:
         max-size: "30m"
         max-file: "3"
-        labels: "service"
-        env: "APP_ENV"
     labels:
       service: "queue-worker"
     command: >
@@ -331,8 +323,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-        labels: "service"
-        env: "APP_ENV"
     labels:
       service: "scheduler"
     command: >
@@ -376,8 +366,6 @@ services:
       options:
         max-size: "20m"
         max-file: "3"
-        labels: "service"
-        env: "MYSQL_DATABASE"
     labels:
       service: "database"
     command: [
@@ -412,11 +400,9 @@ services:
       --save 300 10
       --save 60 10000
       --loglevel notice
-      --logfile /var/log/redis/redis.log
       ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}
     volumes:
       - redis_data:/data
-      - ./logs/redis:/var/log/redis
     networks:
       - minestore_network
     logging:
@@ -424,8 +410,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-        labels: "service"
-        env: "APP_ENV"
     labels:
       service: "redis"
     healthcheck:
