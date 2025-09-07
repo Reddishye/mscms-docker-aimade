@@ -207,7 +207,7 @@ services:
         max-size: "20m"
         max-file: "3"
 
-  # Nginx reverse proxy - SIMPLIFIED WITHOUT CUSTOM CONFIG MOUNTS
+  # Nginx reverse proxy - NO PORTS, WITH TRAEFIK LABELS FOR RAW COMPOSE
   nginx:
     image: nginx:alpine
     container_name: minestore-nginx
@@ -217,23 +217,26 @@ services:
         condition: service_healthy
       frontend:
         condition: service_healthy
-    ports:
-      - "${NGINX_PORT:-80}:80"
     volumes:
       - minestore_app:/var/www/minestore:ro
-      # REMOVED: Custom nginx config mounts that were causing the error
     networks:
       - minestore_network
       - coolify
     labels:
+      # Essential Traefik labels for Raw Compose mode
       - "traefik.enable=true"
-      - "traefik.http.routers.minestore-${COMPOSE_PROJECT_NAME:-minestore}.rule=Host(`${DOMAIN}`)"
-      - "traefik.http.routers.minestore-${COMPOSE_PROJECT_NAME:-minestore}.entrypoints=websecure"
-      - "traefik.http.routers.minestore-${COMPOSE_PROJECT_NAME:-minestore}.tls.certresolver=letsencrypt"
-      - "traefik.http.services.minestore-${COMPOSE_PROJECT_NAME:-minestore}.loadbalancer.server.port=80"
       - "traefik.docker.network=coolify"
+      - "traefik.http.routers.minestore.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.minestore.entrypoints=websecure"
+      - "traefik.http.routers.minestore.tls=true"
+      - "traefik.http.routers.minestore.tls.certresolver=letsencrypt"
+      - "traefik.http.services.minestore.loadbalancer.server.port=80"
+      # Additional security headers
+      - "traefik.http.middlewares.minestore-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.minestore-headers.headers.customresponseheaders.X-Robots-Tag=noindex,nofollow,nosnippet,noarchive"
+      - "traefik.http.routers.minestore.middlewares=minestore-headers"
+      # Coolify management
       - "coolify.managed=true"
-    # Simple nginx config via environment/command instead of file mounts
     command: >
       sh -c "
       echo 'server {
@@ -243,31 +246,49 @@ services:
         index index.php index.html;
         client_max_body_size 64M;
         
+        # Security headers
+        add_header X-Frame-Options \"SAMEORIGIN\" always;
+        add_header X-Content-Type-Options \"nosniff\" always;
+        add_header X-XSS-Protection \"1; mode=block\" always;
+        
         location /health {
           access_log off;
           return 200 \"healthy\n\";
           add_header Content-Type text/plain;
         }
         
+        # Handle Laravel routes
         location / {
           try_files \$$uri \$$uri/ /index.php?\$$query_string;
         }
         
+        # PHP processing
         location ~ \.php\$$ {
           try_files \$$uri =404;
           fastcgi_pass php-fpm:9000;
           fastcgi_index index.php;
           include fastcgi_params;
           fastcgi_param SCRIPT_FILENAME \$$document_root\$$fastcgi_script_name;
+          fastcgi_param PATH_INFO \$$fastcgi_path_info;
           fastcgi_read_timeout 300;
+          fastcgi_buffer_size 128k;
+          fastcgi_buffers 4 256k;
+          fastcgi_busy_buffers_size 256k;
         }
         
+        # Static files with long expiry
         location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)\$$ {
           expires 1y;
           add_header Cache-Control \"public, immutable\";
+          access_log off;
         }
         
+        # Security: deny access to sensitive files
         location ~ /\. {
+          deny all;
+        }
+        
+        location ~ /(\.env|\.git|composer\.(json|lock)|package\.(json|lock)|artisan) {
           deny all;
         }
       }' > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'
