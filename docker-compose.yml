@@ -161,7 +161,7 @@ services:
         max-size: "50m"
         max-file: "5"
     labels:
-      service: "nginx"
+      - "service=nginx"
       # Traefik labels for Coolify
       - "traefik.enable=true"
       - "traefik.http.routers.minestore.rule=Host(`${DOMAIN}`)"
