@@ -1,4 +1,3 @@
-# Dockerfile for MineStore Application - Complete Production Build (FIXED)
 FROM php:8.3-fpm-bookworm AS minestore-installer
 
 # Environment variables
@@ -252,7 +251,7 @@ WORKDIR /var/www/minestore
 ENTRYPOINT ["/usr/local/bin/install-minestore.sh"]
 
 # ===============================================
-# RUNTIME STAGE - PHP-FPM for Laravel Backend
+# RUNTIME STAGE - PHP-FPM for Queue Workers
 # ===============================================
 FROM php:8.3-fpm-bookworm AS minestore-runtime
 
@@ -274,7 +273,7 @@ RUN apt-get update \
       netcat-openbsd \
  && rm -rf /var/lib/apt/lists/*
 
-# Install PHP extensions INCLUDING REDIS for runtime containers
+# Install PHP extensions INCLUDING REDIS
 RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
  && docker-php-ext-install -j"$(nproc)" \
       pdo_mysql \
@@ -310,7 +309,102 @@ EXPOSE 9000
 CMD ["php-fpm"]
 
 # ===============================================
-# FRONTEND STAGE - Next.js Frontend (PRODUCTION) - COMPLETELY FIXED
+# PRODUCTION STAGE - Apache + PHP for Laravel (NEW!)
+# ===============================================
+FROM php:8.3-apache-bookworm AS minestore-production
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=UTC
+
+# Install runtime dependencies
+RUN apt-get update \
+ && apt-get install -y \
+      curl \
+      libzip-dev \
+      libpng-dev \
+      libjpeg-dev \
+      libfreetype6-dev \
+      libxml2-dev \
+      libcurl4-openssl-dev \
+      libonig-dev \
+      libssl-dev \
+      netcat-openbsd \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install PHP extensions INCLUDING REDIS
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
+ && docker-php-ext-install -j"$(nproc)" \
+      pdo_mysql \
+      mysqli \
+      mbstring \
+      zip \
+      gd \
+      xml \
+      curl \
+      soap \
+      bcmath \
+      opcache \
+ && pecl install redis \
+ && docker-php-ext-enable redis
+
+# Configure PHP for production
+RUN { \
+      echo "memory_limit = 256M"; \
+      echo "upload_max_filesize = 64M"; \
+      echo "post_max_size = 64M"; \
+      echo "max_execution_time = 300"; \
+      echo "opcache.enable = 1"; \
+      echo "opcache.memory_consumption = 128"; \
+      echo "opcache.interned_strings_buffer = 8"; \
+      echo "opcache.max_accelerated_files = 4000"; \
+      echo "opcache.revalidate_freq = 2"; \
+      echo "opcache.fast_shutdown = 1"; \
+    } >> /usr/local/etc/php/php.ini
+
+# Configure Apache for production Laravel
+RUN a2enmod rewrite \
+ && a2enmod headers \
+ && a2enmod ssl
+
+# Create Apache virtual host for Laravel
+RUN cat > /etc/apache2/sites-available/laravel.conf << 'EOF'
+<VirtualHost *:8000>
+    DocumentRoot /var/www/minestore/public
+    DirectoryIndex index.php index.html
+    
+    <Directory /var/www/minestore/public>
+        Options -Indexes +FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+    
+    # Security headers
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-XSS-Protection "1; mode=block"
+    
+    # Logging
+    ErrorLog ${APACHE_LOG_DIR}/error.log
+    CustomLog ${APACHE_LOG_DIR}/access.log combined
+    
+    # Health check endpoint
+    Alias /health /var/www/minestore/public/index.php
+</VirtualHost>
+EOF
+
+# Enable the Laravel site and disable default
+RUN a2dissite 000-default \
+ && a2ensite laravel
+
+# Change Apache to listen on port 8000
+RUN sed -i 's/Listen 80/Listen 8000/' /etc/apache2/ports.conf
+
+WORKDIR /var/www/minestore
+
+EXPOSE 8000
+
+# ===============================================
+# FRONTEND STAGE - Next.js Frontend (PRODUCTION)
 # ===============================================
 FROM node:20-alpine AS minestore-frontend
 
