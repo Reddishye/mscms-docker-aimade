@@ -1,5 +1,5 @@
 services:
-  # Database - needs to be available first
+  # Database
   database:
     image: mariadb:10.11
     container_name: minestore-db
@@ -17,10 +17,7 @@ services:
     command: [
       '--default-authentication-plugin=mysql_native_password',
       '--character-set-server=utf8mb4',
-      '--collation-server=utf8mb4_unicode_ci',
-      '--default-time-zone=+00:00',
-      '--innodb-buffer-pool-size=256M',
-      '--max-connections=100'
+      '--collation-server=utf8mb4_unicode_ci'
     ]
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
@@ -28,13 +25,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "20m"
-        max-file: "3"
 
-  # Redis Cache
+  # Redis
   redis:
     image: redis:7-alpine
     container_name: minestore-redis
@@ -42,10 +34,6 @@ services:
     command: >
       redis-server 
       --appendonly yes 
-      --appendfsync everysec
-      --save 900 1
-      --save 300 10
-      --save 60 10000
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
       ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}
@@ -58,14 +46,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  # Application Installer - runs once to set up the app
+  # Application Installer
   app-installer:
     build: 
       context: .
@@ -82,32 +64,23 @@ services:
       - minestore_app:/var/www/minestore
       - minestore_shared:/shared
     environment:
-      # Required variables
       - APP_URL=${APP_URL}
       - LICENSE_KEY=${LICENSE_KEY}
-      
-      # Database variables
       - DB_CONNECTION=mysql
       - DB_HOST=database
       - DB_PORT=3306
       - DB_DATABASE=${DB_DATABASE:-minestore}
       - DB_USERNAME=${DB_USERNAME:-minestore_user}
       - DB_PASSWORD=${DB_PASSWORD}
-      
-      # Redis variables
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      
-      # Optional variables with default values
       - APP_NAME=${APP_NAME:-MineStoreCMS}
       - APP_ENV=${APP_ENV:-production}
       - APP_DEBUG=${APP_DEBUG:-false}
       - APP_KEY=${APP_KEY:-}
       - TIMEZONE=${TIMEZONE:-UTC}
       - LOCALE=${LOCALE:-en}
-      
-      # MineStoreCMS configuration
       - PAYNOW_ENABLED=${PAYNOW_ENABLED:-}
       - PAYNOW_TAX_MODE=${PAYNOW_TAX_MODE:-}
       - PAYNOW_STORE_ID=${PAYNOW_STORE_ID:-}
@@ -115,19 +88,14 @@ services:
       - STEAM_API_KEY=${STEAM_API_KEY:-}
     networks:
       - minestore_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  # PHP-FPM service
-  php-fpm:
+  # Laravel Backend - DIRECT HTTP EXPOSURE
+  laravel-backend:
     build:
       context: .
       dockerfile: Dockerfile
       target: minestore-runtime
-    container_name: minestore-php-fpm
+    container_name: minestore-laravel
     restart: unless-stopped
     depends_on:
       app-installer:
@@ -164,19 +132,37 @@ services:
     working_dir: /var/www/minestore
     networks:
       - minestore_network
+      - coolify
+    # Use Laravel's built-in server for HTTP
+    command: >
+      bash -c "
+        echo 'Waiting for installation...'
+        while [ ! -f /var/www/minestore/.installed ]; do
+          sleep 5
+        done
+        
+        cd /var/www/minestore
+        echo 'Starting Laravel HTTP server...'
+        php artisan serve --host=0.0.0.0 --port=8000
+      "
+    labels:
+      # API and Admin routes go to Laravel
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.minestore-api.rule=Host(`store.lowycraft.net`) && (PathPrefix(`/api/`) || PathPrefix(`/admin/`) || PathPrefix(`/auth/`) || Path(`/`) && Method(`POST`))"
+      - "traefik.http.routers.minestore-api.entrypoints=websecure"
+      - "traefik.http.routers.minestore-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.minestore-api.priority=100"
+      - "traefik.http.services.minestore-api.loadbalancer.server.port=8000"
+      - "coolify.managed=true"
     healthcheck:
-      test: ["CMD-SHELL", "php-fpm-healthcheck || nc -z 127.0.0.1 9000"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health || echo 'healthy'"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "20m"
-        max-file: "5"
 
-  # Next.js Frontend
+  # Next.js Frontend - DIRECT EXPOSURE
   frontend:
     build:
       context: .
@@ -195,117 +181,25 @@ services:
       - NEXT_PUBLIC_API_URL=${APP_URL}
     networks:
       - minestore_network
+      - coolify
+    labels:
+      # Everything else goes to Next.js frontend
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.minestore-frontend.rule=Host(`store.lowycraft.net`)"
+      - "traefik.http.routers.minestore-frontend.entrypoints=websecure"
+      - "traefik.http.routers.minestore-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.minestore-frontend.priority=50"
+      - "traefik.http.services.minestore-frontend.loadbalancer.server.port=3000"
+      - "coolify.managed=true"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 120s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "20m"
-        max-file: "3"
 
-  # Nginx reverse proxy - NO PORTS, WITH TRAEFIK LABELS FOR RAW COMPOSE
-  nginx:
-    image: nginx:alpine
-    container_name: minestore-nginx
-    restart: unless-stopped
-    depends_on:
-      php-fpm:
-        condition: service_healthy
-      frontend:
-        condition: service_healthy
-    volumes:
-      - minestore_app:/var/www/minestore:ro
-    networks:
-      - minestore_network
-      - coolify
-    labels:
-      # Essential Traefik labels for Raw Compose mode
-      - "traefik.enable=true"
-      - "traefik.docker.network=coolify"
-      - "traefik.http.routers.minestore.rule=Host(`${DOMAIN}`)"
-      - "traefik.http.routers.minestore.entrypoints=websecure"
-      - "traefik.http.routers.minestore.tls=true"
-      - "traefik.http.routers.minestore.tls.certresolver=letsencrypt"
-      - "traefik.http.services.minestore.loadbalancer.server.port=80"
-      # Additional security headers
-      - "traefik.http.middlewares.minestore-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
-      - "traefik.http.middlewares.minestore-headers.headers.customresponseheaders.X-Robots-Tag=noindex,nofollow,nosnippet,noarchive"
-      - "traefik.http.routers.minestore.middlewares=minestore-headers"
-      # Coolify management
-      - "coolify.managed=true"
-    command: >
-      sh -c "
-      echo 'server {
-        listen 80;
-        server_name _;
-        root /var/www/minestore/public;
-        index index.php index.html;
-        client_max_body_size 64M;
-        
-        # Security headers
-        add_header X-Frame-Options \"SAMEORIGIN\" always;
-        add_header X-Content-Type-Options \"nosniff\" always;
-        add_header X-XSS-Protection \"1; mode=block\" always;
-        
-        location /health {
-          access_log off;
-          return 200 \"healthy\n\";
-          add_header Content-Type text/plain;
-        }
-        
-        # Handle Laravel routes
-        location / {
-          try_files \$$uri \$$uri/ /index.php?\$$query_string;
-        }
-        
-        # PHP processing
-        location ~ \.php\$$ {
-          try_files \$$uri =404;
-          fastcgi_pass php-fpm:9000;
-          fastcgi_index index.php;
-          include fastcgi_params;
-          fastcgi_param SCRIPT_FILENAME \$$document_root\$$fastcgi_script_name;
-          fastcgi_param PATH_INFO \$$fastcgi_path_info;
-          fastcgi_read_timeout 300;
-          fastcgi_buffer_size 128k;
-          fastcgi_buffers 4 256k;
-          fastcgi_busy_buffers_size 256k;
-        }
-        
-        # Static files with long expiry
-        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)\$$ {
-          expires 1y;
-          add_header Cache-Control \"public, immutable\";
-          access_log off;
-        }
-        
-        # Security: deny access to sensitive files
-        location ~ /\. {
-          deny all;
-        }
-        
-        location ~ /(\.env|\.git|composer\.(json|lock)|package\.(json|lock)|artisan) {
-          deny all;
-        }
-      }' > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'
-      "
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "5"
-
-  # Laravel Queue Workers
+  # Queue Worker
   queue-worker:
     build:
       context: .
@@ -314,7 +208,7 @@ services:
     container_name: minestore-queue-worker
     restart: unless-stopped
     depends_on:
-      php-fpm:
+      laravel-backend:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -337,21 +231,14 @@ services:
       - minestore_network
     command: >
       bash -c "
-        echo 'Waiting for app installation to complete...'
         while [ ! -f /var/www/minestore/.installed ]; do
           sleep 5
         done
-        
         cd /var/www/minestore
-        exec php artisan queue:work --queue=high,standard,low,default,paynow --sleep=3 --tries=3 --max-time=3600 --memory=256
+        php artisan queue:work --queue=high,standard,low,default,paynow --sleep=3 --tries=3
       "
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "30m"
-        max-file: "3"
 
-  # Laravel Scheduler
+  # Scheduler
   scheduler:
     build:
       context: .
@@ -360,9 +247,7 @@ services:
     container_name: minestore-scheduler
     restart: unless-stopped
     depends_on:
-      php-fpm:
-        condition: service_healthy
-      redis:
+      laravel-backend:
         condition: service_healthy
     volumes:
       - minestore_app:/var/www/minestore
@@ -383,22 +268,15 @@ services:
       - minestore_network
     command: >
       bash -c "
-        echo 'Waiting for app installation to complete...'
         while [ ! -f /var/www/minestore/.installed ]; do
           sleep 5
         done
-        
         cd /var/www/minestore
         while true; do
           php artisan schedule:run --verbose --no-interaction
           sleep 60
         done
       "
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
 volumes:
   minestore_app:
@@ -413,8 +291,5 @@ volumes:
 networks:
   minestore_network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
   coolify:
     external: true
