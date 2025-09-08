@@ -9,10 +9,17 @@ services:
       - MYSQL_DATABASE=${DB_DATABASE:-minestore}
       - MYSQL_USER=${DB_USERNAME:-minestore_user}
       - MYSQL_PASSWORD=${DB_PASSWORD}
+      - TZ=${TIMEZONE:-UTC}
     volumes:
       - database_data:/var/lib/mysql
     networks:
       - minestore_network
+    command: [
+      '--default-authentication-plugin=mysql_native_password',
+      '--character-set-server=utf8mb4',
+      '--collation-server=utf8mb4_unicode_ci',
+      '--innodb-buffer-pool-size=256M'
+    ]
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -25,7 +32,12 @@ services:
     image: redis:7-alpine
     container_name: minestore-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server 
+      --appendonly yes 
+      --maxmemory 256mb 
+      --maxmemory-policy allkeys-lru
+      ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}
     volumes:
       - redis_data:/data
     networks:
@@ -35,6 +47,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   # App Installer
   app-installer:
@@ -63,6 +76,7 @@ services:
       - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - APP_NAME=${APP_NAME}
       - APP_ENV=production
       - APP_DEBUG=false
@@ -72,20 +86,25 @@ services:
       - PAYNOW_ENABLED=${PAYNOW_ENABLED}
       - PAYNOW_STORE_ID=${PAYNOW_STORE_ID}
       - PAYNOW_API_KEY=${PAYNOW_API_KEY}
+      - STEAM_API_KEY=${STEAM_API_KEY}
     networks:
       - minestore_network
 
-  # Laravel Backend - Direct HTTP
+  # PRODUCTION Laravel Backend with Apache
   minestore-laravel:
     build:
       context: .
       dockerfile: Dockerfile
-      target: minestore-runtime
+      target: minestore-production  # Uses Apache stage
     container_name: minestore-laravel
     restart: unless-stopped
     depends_on:
       app-installer:
         condition: service_completed_successfully
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - minestore_app:/var/www/minestore
     environment:
@@ -99,28 +118,47 @@ services:
       - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - APP_NAME=${APP_NAME}
       - APP_ENV=production
       - APP_DEBUG=false
       - APP_KEY=${APP_KEY}
+      - TIMEZONE=${TIMEZONE}
+      - LOCALE=${LOCALE}
+      - PAYNOW_ENABLED=${PAYNOW_ENABLED}
+      - PAYNOW_STORE_ID=${PAYNOW_STORE_ID}
+      - PAYNOW_API_KEY=${PAYNOW_API_KEY}
+      - STEAM_API_KEY=${STEAM_API_KEY}
     working_dir: /var/www/minestore
     networks:
       - minestore_network
       - coolify
+    # PRODUCTION Apache startup
     command: >
       bash -c "
-        while [ ! -f /var/www/minestore/.installed ]; do sleep 5; done
+        echo 'Waiting for installation to complete...'
+        while [ ! -f /var/www/minestore/.installed ]; do
+          sleep 5
+        done
+        
         cd /var/www/minestore
-        php artisan serve --host=0.0.0.0 --port=8000
+        
+        echo 'Setting production file permissions...'
+        chown -R www-data:www-data /var/www/minestore
+        chmod -R 755 /var/www/minestore
+        chmod -R 775 storage bootstrap/cache
+        
+        echo 'Starting Apache in production mode...'
+        apache2-foreground
       "
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health || echo healthy"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 120s
 
-  # Next.js Frontend - Direct HTTP
+  # Next.js Frontend
   minestore-frontend:
     build:
       context: .
@@ -158,6 +196,8 @@ services:
     depends_on:
       minestore-laravel:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - minestore_app:/var/www/minestore
     environment:
@@ -171,6 +211,7 @@ services:
       - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     working_dir: /var/www/minestore
     networks:
       - minestore_network
@@ -178,10 +219,47 @@ services:
       bash -c "
         while [ ! -f /var/www/minestore/.installed ]; do sleep 5; done
         cd /var/www/minestore
-        php artisan queue:work --sleep=3 --tries=3
+        php artisan queue:work --queue=high,standard,low,default,paynow --sleep=3 --tries=3 --max-time=3600 --memory=256
       "
 
-# FIXED VOLUMES SECTION - Proper YAML syntax
+  # Scheduler
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: minestore-runtime
+    container_name: minestore-scheduler
+    restart: unless-stopped
+    depends_on:
+      minestore-laravel:
+        condition: service_healthy
+    volumes:
+      - minestore_app:/var/www/minestore
+    environment:
+      - APP_URL=${APP_URL}
+      - LICENSE_KEY=${LICENSE_KEY}
+      - DB_CONNECTION=mysql
+      - DB_HOST=database
+      - DB_PORT=3306
+      - DB_DATABASE=${DB_DATABASE}
+      - DB_USERNAME=${DB_USERNAME}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    working_dir: /var/www/minestore
+    networks:
+      - minestore_network
+    command: >
+      bash -c "
+        while [ ! -f /var/www/minestore/.installed ]; do sleep 5; done
+        cd /var/www/minestore
+        while true; do
+          php artisan schedule:run --verbose --no-interaction
+          sleep 60
+        done
+      "
+
 volumes:
   minestore_app:
     driver: local
