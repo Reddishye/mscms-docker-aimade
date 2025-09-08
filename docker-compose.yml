@@ -106,7 +106,7 @@ services:
     working_dir: /var/www/minestore
     networks:
       - minestore_network
-      - coolify  # Must be on coolify network for Traefik to reach it
+      - coolify
     command: >
       bash -c "
         while [ ! -f /var/www/minestore/.installed ]; do sleep 5; done
@@ -139,7 +139,7 @@ services:
       - NEXT_PUBLIC_API_URL=${APP_URL}
     networks:
       - minestore_network
-      - coolify  # Must be on coolify network for Traefik to reach it
+      - coolify
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s
@@ -181,11 +181,16 @@ services:
         php artisan queue:work --sleep=3 --tries=3
       "
 
+# FIXED VOLUMES SECTION - Proper YAML syntax
 volumes:
   minestore_app:
-    minestore_shared:
-    database_data:
-    redis_data:
+    driver: local
+  minestore_shared:
+    driver: local
+  database_data:
+    driver: local
+  redis_data:
+    driver: local
 
 networks:
   minestore_network:
