@@ -9,16 +9,10 @@ services:
       - MYSQL_DATABASE=${DB_DATABASE:-minestore}
       - MYSQL_USER=${DB_USERNAME:-minestore_user}
       - MYSQL_PASSWORD=${DB_PASSWORD}
-      - TZ=${TIMEZONE:-UTC}
     volumes:
       - database_data:/var/lib/mysql
     networks:
       - minestore_network
-    command: [
-      '--default-authentication-plugin=mysql_native_password',
-      '--character-set-server=utf8mb4',
-      '--collation-server=utf8mb4_unicode_ci'
-    ]
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -31,12 +25,7 @@ services:
     image: redis:7-alpine
     container_name: minestore-redis
     restart: unless-stopped
-    command: >
-      redis-server 
-      --appendonly yes 
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     networks:
@@ -47,7 +36,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Application Installer
+  # App Installer
   app-installer:
     build: 
       context: .
@@ -69,28 +58,25 @@ services:
       - DB_CONNECTION=mysql
       - DB_HOST=database
       - DB_PORT=3306
-      - DB_DATABASE=${DB_DATABASE:-minestore}
-      - DB_USERNAME=${DB_USERNAME:-minestore_user}
+      - DB_DATABASE=${DB_DATABASE}
+      - DB_USERNAME=${DB_USERNAME}
       - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      - APP_NAME=${APP_NAME:-MineStoreCMS}
-      - APP_ENV=${APP_ENV:-production}
-      - APP_DEBUG=${APP_DEBUG:-false}
-      - APP_KEY=${APP_KEY:-}
-      - TIMEZONE=${TIMEZONE:-UTC}
-      - LOCALE=${LOCALE:-en}
-      - PAYNOW_ENABLED=${PAYNOW_ENABLED:-}
-      - PAYNOW_TAX_MODE=${PAYNOW_TAX_MODE:-}
-      - PAYNOW_STORE_ID=${PAYNOW_STORE_ID:-}
-      - PAYNOW_API_KEY=${PAYNOW_API_KEY:-}
-      - STEAM_API_KEY=${STEAM_API_KEY:-}
+      - APP_NAME=${APP_NAME}
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - APP_KEY=${APP_KEY}
+      - TIMEZONE=${TIMEZONE}
+      - LOCALE=${LOCALE}
+      - PAYNOW_ENABLED=${PAYNOW_ENABLED}
+      - PAYNOW_STORE_ID=${PAYNOW_STORE_ID}
+      - PAYNOW_API_KEY=${PAYNOW_API_KEY}
     networks:
       - minestore_network
 
-  # Laravel Backend - DIRECT HTTP EXPOSURE
-  laravel-backend:
+  # Laravel Backend - Direct HTTP
+  minestore-laravel:
     build:
       context: .
       dockerfile: Dockerfile
@@ -100,10 +86,6 @@ services:
     depends_on:
       app-installer:
         condition: service_completed_successfully
-      database:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     volumes:
       - minestore_app:/var/www/minestore
     environment:
@@ -112,58 +94,34 @@ services:
       - DB_CONNECTION=mysql
       - DB_HOST=database
       - DB_PORT=3306
-      - DB_DATABASE=${DB_DATABASE:-minestore}
-      - DB_USERNAME=${DB_USERNAME:-minestore_user}
+      - DB_DATABASE=${DB_DATABASE}
+      - DB_USERNAME=${DB_USERNAME}
       - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      - APP_NAME=${APP_NAME:-MineStoreCMS}
-      - APP_ENV=${APP_ENV:-production}
-      - APP_DEBUG=${APP_DEBUG:-false}
-      - APP_KEY=${APP_KEY:-}
-      - TIMEZONE=${TIMEZONE:-UTC}
-      - LOCALE=${LOCALE:-en}
-      - PAYNOW_ENABLED=${PAYNOW_ENABLED:-}
-      - PAYNOW_TAX_MODE=${PAYNOW_TAX_MODE:-}
-      - PAYNOW_STORE_ID=${PAYNOW_STORE_ID:-}
-      - PAYNOW_API_KEY=${PAYNOW_API_KEY:-}
-      - STEAM_API_KEY=${STEAM_API_KEY:-}
+      - APP_NAME=${APP_NAME}
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - APP_KEY=${APP_KEY}
     working_dir: /var/www/minestore
     networks:
       - minestore_network
-      - coolify
-    # Use Laravel's built-in server for HTTP
+      - coolify  # Must be on coolify network for Traefik to reach it
     command: >
       bash -c "
-        echo 'Waiting for installation...'
-        while [ ! -f /var/www/minestore/.installed ]; do
-          sleep 5
-        done
-        
+        while [ ! -f /var/www/minestore/.installed ]; do sleep 5; done
         cd /var/www/minestore
-        echo 'Starting Laravel HTTP server...'
         php artisan serve --host=0.0.0.0 --port=8000
       "
-    labels:
-      # API and Admin routes go to Laravel
-      - "traefik.enable=true"
-      - "traefik.docker.network=coolify"
-      - "traefik.http.routers.minestore-api.rule=Host(`store.lowycraft.net`) && (PathPrefix(`/api/`) || PathPrefix(`/admin/`) || PathPrefix(`/auth/`) || Path(`/`) && Method(`POST`))"
-      - "traefik.http.routers.minestore-api.entrypoints=websecure"
-      - "traefik.http.routers.minestore-api.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.minestore-api.priority=100"
-      - "traefik.http.services.minestore-api.loadbalancer.server.port=8000"
-      - "coolify.managed=true"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health || echo 'healthy'"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health || echo healthy"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
 
-  # Next.js Frontend - DIRECT EXPOSURE
-  frontend:
+  # Next.js Frontend - Direct HTTP
+  minestore-frontend:
     build:
       context: .
       dockerfile: Dockerfile
@@ -181,17 +139,7 @@ services:
       - NEXT_PUBLIC_API_URL=${APP_URL}
     networks:
       - minestore_network
-      - coolify
-    labels:
-      # Everything else goes to Next.js frontend
-      - "traefik.enable=true"
-      - "traefik.docker.network=coolify"
-      - "traefik.http.routers.minestore-frontend.rule=Host(`store.lowycraft.net`)"
-      - "traefik.http.routers.minestore-frontend.entrypoints=websecure"
-      - "traefik.http.routers.minestore-frontend.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.minestore-frontend.priority=50"
-      - "traefik.http.services.minestore-frontend.loadbalancer.server.port=3000"
-      - "coolify.managed=true"
+      - coolify  # Must be on coolify network for Traefik to reach it
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s
@@ -208,9 +156,7 @@ services:
     container_name: minestore-queue-worker
     restart: unless-stopped
     depends_on:
-      laravel-backend:
-        condition: service_healthy
-      redis:
+      minestore-laravel:
         condition: service_healthy
     volumes:
       - minestore_app:/var/www/minestore
@@ -220,73 +166,26 @@ services:
       - DB_CONNECTION=mysql
       - DB_HOST=database
       - DB_PORT=3306
-      - DB_DATABASE=${DB_DATABASE:-minestore}
-      - DB_USERNAME=${DB_USERNAME:-minestore_user}
+      - DB_DATABASE=${DB_DATABASE}
+      - DB_USERNAME=${DB_USERNAME}
       - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     working_dir: /var/www/minestore
     networks:
       - minestore_network
     command: >
       bash -c "
-        while [ ! -f /var/www/minestore/.installed ]; do
-          sleep 5
-        done
+        while [ ! -f /var/www/minestore/.installed ]; do sleep 5; done
         cd /var/www/minestore
-        php artisan queue:work --queue=high,standard,low,default,paynow --sleep=3 --tries=3
-      "
-
-  # Scheduler
-  scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: minestore-runtime
-    container_name: minestore-scheduler
-    restart: unless-stopped
-    depends_on:
-      laravel-backend:
-        condition: service_healthy
-    volumes:
-      - minestore_app:/var/www/minestore
-    environment:
-      - APP_URL=${APP_URL}
-      - LICENSE_KEY=${LICENSE_KEY}
-      - DB_CONNECTION=mysql
-      - DB_HOST=database
-      - DB_PORT=3306
-      - DB_DATABASE=${DB_DATABASE:-minestore}
-      - DB_USERNAME=${DB_USERNAME:-minestore_user}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-    working_dir: /var/www/minestore
-    networks:
-      - minestore_network
-    command: >
-      bash -c "
-        while [ ! -f /var/www/minestore/.installed ]; do
-          sleep 5
-        done
-        cd /var/www/minestore
-        while true; do
-          php artisan schedule:run --verbose --no-interaction
-          sleep 60
-        done
+        php artisan queue:work --sleep=3 --tries=3
       "
 
 volumes:
   minestore_app:
-    driver: local
-  minestore_shared:
-    driver: local
-  database_data:
-    driver: local
-  redis_data:
-    driver: local
+    minestore_shared:
+    database_data:
+    redis_data:
 
 networks:
   minestore_network:
